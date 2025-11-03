@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
+import json
 
 # parts of heart beat:
 # P = small Gaussian/sin bump
@@ -15,21 +16,35 @@ import matplotlib.pyplot as plt
 # T wave	    0.16	            +0.3	    Ventricular repolarization
 # TP segment	0.26	         0.0	        Heart at rest
 
+with open("heartrate_config.json") as f:
+    config = json.load(f)
 
-fs = 500          # Sampling frequency (Hz)
-bpm = 75
-beat_period = 60 / bpm   # 0.8 s
-samples = int(fs * beat_period)
+bpm = config["bpm"]
+fs = config["sampling_hz"]
+num_beats = config["num_beats"]
+heartbeat_type = config["heartbeat_type"]
+durations_json = config["durations"]
+
+gain = 100
+baseline = 1.5
+adc_max = 4095
+vin = 0
+vref = 3.3 
+
+
+
 
 # --- Define durations (in samples) ---
-durations = {
-    "P": int(0.08 * fs),
-    "PR": int(0.04 * fs),
-    "QRS": int(0.08 * fs),
-    "ST": int(0.12 * fs),
-    "T": int(0.16 * fs),
-    "TP": int(0.32 * fs)
-}
+# durations = {
+#     "P": int(0.1 * samples),
+#     "PR": int(0.05 * samples),
+#     "QRS": int(0.1 * samples),
+#     "ST": int(0.15 * samples),
+#     "T": int(0.2 * samples),
+#     "TP": int(0.4 * samples)
+# }
+
+
 
 # --- Generate waveform parts ---
 def p_wave(n):
@@ -53,16 +68,28 @@ def t_wave(n):
 # Flat segments
 def flat(n):
     return np.zeros(n)
+#Convert single float value to digital reading (amplify by 100x, turn to voltage, add to baseline, then convert to 12bit)
+def float_to_adc(ecg_value, gain = 100, vin = 0, vref = 3.3, baseline = 1.5, adc_max = 4095):
+    amplified_mV = ecg_value * gain;  #e.g. 1.0 mV -> 100 mV
+    amplified_V = amplified_mV / 1000; #mV -> V
+    vin = baseline + amplified_V
 
-# Analog to Digital Conversion of voltage
+    vin = max(0.0, min(vref, vin))  # clamp to 0..VREF
+    adc = int(round((vin / vref) * adc_max))
+    return adc # 0..4095
 
-def voltage_ADC(ecg):
-    ecg_amplified_mV = ecg * 100 #amplify mV by 100x
-    ecg_adjusted = ecg_amplified_mV/1000 + 1.5 #convert to V from mV, then add 1.5V to bring to baseline
-    return ecg_adjusted
-
+#Convert full ECG dataset to digital data
+def convert_to_digital(ecg):
+    ecg_digital = []
+    for i in ecg:
+        ecg_digital.append(float_to_adc(i))
+    return ecg_digital
 # --- Combine all segments ---
-def generate_ecg(durations):
+def generate_ecg(durations_json, bpm, fs, num_beats):
+    beat_period = 60 / bpm   # seconds per heart beat
+    total_samples = int(fs * beat_period) # total samples based on bpm and sampling rate
+    durations = {key: int(value * total_samples) for key, value in durations_json.items()}
+
     ecg = np.concatenate([
         p_wave(durations["P"]),
         flat(durations["PR"]),
@@ -71,12 +98,25 @@ def generate_ecg(durations):
         t_wave(durations["T"]),
         flat(durations["TP"])
     ])
+
+    ecg = np.tile(ecg, num_beats)
     return ecg
+
 
 # ecg_new = voltage_ADC(ecg)
 # print(ecg_new)
 
-ecg = generate_ecg(durations)
+def create_dataset(durations_json, bpm, fs, num_beats):
+    ecg = generate_ecg(durations_json, bpm, fs, num_beats)
+    ecg_digital = convert_to_digital(ecg)
+    ecg_digital = np.array(ecg_digital)
+    return ecg_digital
+
+ecg_digital = create_dataset(durations_json, bpm, fs, num_beats)
+
+plt.plot(ecg_digital, label="Python ECG")
+plt.legend()
+plt.show()
 # # --- Plot ---
 # time = np.linspace(0, beat_period, len(ecg))
 # plt.plot(time, ecg)
