@@ -1,10 +1,6 @@
-# This version of the code now does the following:
-# Receives, deconstructs, and graphs packets of data from MCU in real time.
-# Note 1: This data is being generated from a second ESP32 (code in esp32_signalgenerator.ino), 
-# and is streamed in 8-bit resolution (as opposed to 12-bit resolution, as the data being generated was before).
-# The code has been changed to support conversion of data streamed at 8-bit resolution accordingly - these changes 
-# will need to be reverted if/when using 12-bit resolution data in future development.
-# Note 2: The code now utilizes live time-stamps read from data packets to create data arrays for graphing. 
+# This version of the code now adds CSV logging alongside real-time visualization.
+# In addition to parsing and plotting streamed ECG packets, it saves all received samples
+# (timestamp, sample value, packet ID) to a CSV file in the working directory.
 
 import sys
 import serial
@@ -18,6 +14,8 @@ import json
 import wfdb
 from PyQt5 import QtWidgets, QtCore
 import pyqtgraph as pg
+import queue
+import csv
 
 ser = serial.Serial('/dev/cu.usbserial-0001', 115200, timeout=1)
 time.sleep(2)  # Wait for connection to stabilize
@@ -61,7 +59,7 @@ status_label = None
 
 
 # THREAD 1
-def read_from_mcu(packet_size): #, expected_packet_num, timeout
+def read_from_mcu(packet_size, csv_queue): #, expected_packet_num, timeout
     
     print("Listening for packets...\n")
     buffer = b''
@@ -114,6 +112,8 @@ def read_from_mcu(packet_size): #, expected_packet_num, timeout
             # Samples (10 samples, 2 bytes each, little-endian)
             samples = struct.unpack('<' + 'B'*10, packet[7:17])  # H = uint16, interpret 20 bytes as 10 unsigned 16-bit integers in little-endian order.
 
+            for i in range(len(samples)):
+                csv_queue.put([sample_times[i], samples[i], packet_id])
            
             with data_lock:
                 received_samples_full.extend(samples)
@@ -128,7 +128,8 @@ def read_from_mcu(packet_size): #, expected_packet_num, timeout
             packet_count += 1
             print(f"Packet ID: {packet_id}, Timestamp: {timestamp}, Samples: {samples}")
 
-            
+            # else:
+            #     buffer = buffer[1:]
     
     print(f"Exited read loop. stop_flag={stop_flag}, packet_count={packet_count}")
     print("Full set of values: ")
@@ -171,7 +172,7 @@ def update_plot():
 
 
 
-def start_streaming_from_mcu():
+def start_streaming_from_mcu(csv_queue):
     stop_streaming_from_mcu()
     with data_lock:
         received_samples_full.clear() #clear array of all received samples
@@ -185,7 +186,7 @@ def start_streaming_from_mcu():
 
     ser.write(b'START\n')     # <--- tell firmware to start
     time.sleep(0.1)
-    mcu_read_thread = threading.Thread(target=read_from_mcu, args=(packet_size,), daemon=True)
+    mcu_read_thread = threading.Thread(target=read_from_mcu, args=(packet_size, csv_queue), daemon=True)
     mcu_read_thread.start()
     
 def stop_streaming_from_mcu():
@@ -196,10 +197,55 @@ def stop_streaming_from_mcu():
     ser.reset_output_buffer()
     stop_flag.clear()
 
-  
+def write_csv_thread(file_name, csv_queue, stop_flag):
+    with open(file_name, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Time', 'Sample', 'Packet ID'])
+
+    batch = []
+    samples_written = 0
+    while not stop_flag.is_set():
+        time.sleep(1.0)  # Wait 1 second between writes
+        
+        while not csv_queue.empty():
+            try:
+                entry = csv_queue.get(block=False)
+                batch.append(entry)
+            except queue.Empty:
+                break
+        if len(batch) > 0:
+            with open(file_name, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerows(batch)  # Write all rows at once
+            
+            samples_written += len(batch)
+            print(f"📝 Wrote {len(batch)} samples to CSV (total: {samples_written})")
+        
+        
+    print("Streaming stopped, writing remaining data...")
+    final_batch = []
+    while not csv_queue.empty():
+        try:
+            item = csv_queue.get(block=False)
+            final_batch.append(item)
+        except queue.Empty:
+            break
+    
+    if len(final_batch) > 0:
+        with open(file_name, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerows(final_batch)
+        samples_written += len(final_batch)
+        print(f"📝 Final write: {len(final_batch)} samples")
+    
+    print(f"✅ CSV writer finished. Total samples written: {samples_written}")
+    
+
+
 def main():
 
     global plot_widget, curve, status_label # global variables that will update over course of run
+    csv_queue = queue.Queue()
     with data_lock:
         received_samples_full.clear()
         received_samples_plot.clear()
@@ -249,8 +295,12 @@ def main():
     timer.timeout.connect(update_plot)
     timer.start(200)  # Update every 80ms (20 FPS)
 
+    
+    #CSV writing thread
+    thread_csv = threading.Thread(target = write_csv_thread, args = ("heartrate_csv.csv", csv_queue, stop_flag,), daemon = False)
+
     # Start streaming in background (after small delay for GUI to load)
-    QtCore.QTimer.singleShot(500, lambda: (start_streaming_from_mcu(), thread_stop_command()))
+    QtCore.QTimer.singleShot(500, lambda: (start_streaming_from_mcu(csv_queue), thread_stop_command(), thread_csv.start()))
     
     # Show window
     win.show()
