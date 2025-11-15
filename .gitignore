@@ -11,3 +11,6 @@ data_logs/
 
 # Datasets
 datasets/
+
+# Run metadata
+run_metadata.json
