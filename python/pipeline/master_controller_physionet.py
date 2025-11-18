@@ -20,7 +20,11 @@ patient_id = "P00001"
 segment_id = "s05"
 file_id_total = patient_id.lower() + "_" + segment_id
 file_name = os.path.join(
-    datasets_dir, f"ECG_Data_{patient_id}", segment_id, file_id_total
+    datasets_dir,
+    "PhysioNet Datasets",
+    f"ECG_Data_{patient_id}",
+    segment_id,
+    file_id_total,
 )  # CHANGE THIS LINE TO CHANGE FILE
 
 output_dir = get_output_dir(patient_id, segment_id)
@@ -61,12 +65,12 @@ def run_full_pipeline():
     )  # add project_root to make sure it is running from project root, not working directory
     print("✅ Streaming complete.\n")
 
-    # === STEP 5: Graph and compare ===
-    print("=== STEP 5: Generating comparison graphs ===")
-    compare_data_main(csv_logs_folder_path=output_dir)
-    print("✅ Graph generation complete.\n")
+    # # === STEP 5: Graph and compare ===
+    # print("=== STEP 5: Generating comparison graphs ===")
+    # compare_data_main(csv_logs_folder_path=output_dir)
+    # print("✅ Graph generation complete.\n")
 
-    print("🎯 Full ECG pipeline completed successfully!")
+    # print("🎯 Full ECG pipeline completed successfully!")
 
 
 if __name__ == "__main__":
