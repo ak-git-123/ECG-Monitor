@@ -8,7 +8,8 @@ if project_root not in sys.path:
 # print("🔍 sys.path[0]:", sys.path[0])  # optional for debugging
 
 import sys
-import serial
+
+# import serial
 import time
 
 import matplotlib.pyplot as plt
@@ -24,6 +25,8 @@ import csv
 import datetime
 from scipy.signal import butter, sosfilt, sosfilt_zi
 import os
+from bleak import BleakScanner, BleakClient
+import asyncio
 
 # ========= IMPORT CLASSES FROM CORE ===================================================================
 from python.core.data_handling import Packet, PacketParser
@@ -56,27 +59,28 @@ class Config:
         self.max_samples_plotted = self.fs * self.plot_window_s  # e.g., 250*5 = 1250
 
 
-# ========================================================================================================
-
+# ========= IMPORT BLE VARIABLE INFORMATION FROM CONFIG ===============================================================================================
+from python.tests.ble.ble_config import (
+    TARGET_DEVICE_NAME,
+    ECG_SERVICE_UUID,
+    ECG_DATA_CHARACTERISTIC_UUID,
+    ECG_COMMAND_CHARACTERISTIC_UUID,
+)
 
 # GLOBAL VARIABLES ====================================================================================
 
-ser = serial.Serial("/dev/cu.usbserial-0001", 115200, timeout=1)
-# signalgen_esp32_ser = serial.Serial('/dev/cu.usbserial-4', 115200, timeout=1)
-
-# plug in main MCU to bottom, signal gen MCU to top port
-time.sleep(2)  # Wait for connection to stabilize
-
-# Clear any leftover data in buffers
-ser.reset_input_buffer()
-ser.reset_output_buffer()
-
+# BLE connection globals
+ble_client = None  # Will hold BleakClient when connected
+ble_data_queue = queue.Queue()  # Thread-safe queue for BLE data
+ble_thread = None  # Will hold the BLE thread reference
+last_packet_time = 0  # Track when last BLE data arrived
+ble_connection_ready = threading.Event()
 
 # Shared data between threads
-received_samples_full = []  # NEW
-received_samples_plot = []  # NEW
-timestamps_full = []  # NEW
-timestamps_plot = []  # NEW
+received_samples_full = []
+received_samples_plot = []
+timestamps_full = []
+timestamps_plot = []
 mcu_timestamps = []
 
 global_sample_counter = 0
@@ -93,7 +97,8 @@ stop_flag = threading.Event()
 # Ensure stop_flag starts cleared
 if stop_flag.is_set():
     stop_flag.clear()
-# NEW - PyQtGraph globals (will be initialized in main)
+
+# PyQtGraph globals (will be initialized in main)
 plot_widget = None
 curve = None
 status_label = None
@@ -101,34 +106,156 @@ status_label = None
 # ========================================================================================================================
 
 
+async def find_and_connect():
+    """
+    Find and connect to ESP32.
+    Mirrors logic from test_ble_streaming.py
+
+    Returns:
+        BleakClient: Connected client, or None if failed
+    """
+    # Scan for device, timeout after 10 seconds
+    print(f"Scanning for '{TARGET_DEVICE_NAME}'...")
+    device = await BleakScanner.find_device_by_name(TARGET_DEVICE_NAME, timeout=10.0)
+
+    # if device not found, return after timeout
+    if device is None:
+        print(f"ERROR: '{TARGET_DEVICE_NAME}' not found")
+        return None
+
+    print(f"Found '{TARGET_DEVICE_NAME}' at {device.address}")
+
+    # Connect
+    client = BleakClient(device.address)
+    await client.connect()
+
+    if client.is_connected:
+        print("Connected successfully")
+        return client
+    else:
+        print("Connection failed")
+        return None
+
+
+async def ble_async_main():
+    """
+    Async function that runs in BLE thread.
+    Mirrors the structure from test_stream_mode() in test_ble_streaming.py
+    """
+    global ble_client
+
+    # Step 1: Connect to ESP32 (matches test_ble_streaming.py:210-215)
+    print("[1/4] Connecting to ESP32...")
+    client = (
+        await find_and_connect()
+    )  # await suspends execution of this function until find_and_connect() has been executed
+
+    if client is None:
+        print("ERROR: Failed to connect to BLE device")
+        ble_connection_ready.set()  # this releases the lock so that the threads waiting can then start/continue
+        return  # Exit if connection failed
+
+    ble_client = client  # Store in global for access from other functions
+
+    try:
+        # Step 2: Subscribe to notifications (matches test_ble_streaming.py:218-221)
+        print("[2/4] Subscribing to notifications and sending START_STREAM...")
+        await client.start_notify(
+            ECG_DATA_CHARACTERISTIC_UUID, ble_notification_handler
+        )
+        await client.write_gatt_char(ECG_COMMAND_CHARACTERISTIC_UUID, b"START")
+        print("✓ Streaming started")
+        ble_connection_ready.set()
+
+        # Step 3: Keep connection alive until stop_flag is set
+        print("[3/4] Streaming data (press STOP to end)...")
+        while not stop_flag.is_set():
+            await asyncio.sleep(0.1)
+
+        # Step 4: Cleanup - send STOP and disconnect (matches test_ble_streaming.py:232-233)
+        print("[4/4] Stopping stream...")
+        try:
+            if client.is_connected:
+                await client.write_gatt_char(ECG_COMMAND_CHARACTERISTIC_UUID, b"STOP")
+                await client.stop_notify(ECG_DATA_CHARACTERISTIC_UUID)
+        except Exception as e:
+            print(f"Warning: Error during cleanup: {e}")
+
+    except Exception as e:
+        print(f"BLE streaming error: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+    finally:
+        # Disconnect (matches test_ble_streaming.py:343-346)
+        try:
+            if client.is_connected:
+                await client.disconnect()
+                print("✓ Disconnected from ESP32")
+        except Exception as e:
+            print(f"Warning: Error during disconnect: {e}")
+
+
+def ble_thread_func():
+    """
+    Wrapper function that runs asyncio event loop in BLE thread.
+    This is what gets passed to threading.Thread()
+    """
+    try:
+        asyncio.run(ble_async_main())
+    except Exception as e:
+        print(f"BLE thread error: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+
+def ble_notification_handler(sender, data):
+    """
+    Called by Bleak when BLE notification received from ESP32.
+    Runs in BLE thread context.
+
+    Args:
+        sender: BLE characteristic handle (provided by Bleak)
+        data: Raw bytes from ESP32
+    """
+    global last_packet_time
+
+    # Put raw bytes into thread-safe queue
+    ble_data_queue.put(data)
+
+    # Update timestamp to track when last data arrived
+    last_packet_time = time.time()
+
+
 # THREAD 1
 def read_from_mcu(
     config, csv_logger, bpm_logger, detector, bpm_detector, bandpass_filter
 ):  # , expected_packet_num, timeout
-    global global_sample_counter, current_bpm, instantaneous_bpm, total_peaks_detected, mcu_timestamps  # ← Add globals
+    global global_sample_counter, current_bpm, instantaneous_bpm, total_peaks_detected, mcu_timestamps, last_packet_time
 
     parser = PacketParser(config.packet_size)
     print("Listening for packets...\n")
 
     packet_count = 0
-    # Initialize to future time to give ESP32 time for startup delay
-    last_packet_time = time.time() + 5.0  # Add 5 seconds buffer
+
     last_bpm_calculation = time.time()
     start_time = 0
     while not stop_flag.is_set():  # while stop != true, aka while "going"
-        # add bytes from the serial port to the buffer array
-        if ser.in_waiting > 0:
-            data = ser.read(ser.in_waiting)  # if bytes in the serial port, read them
-            parser.update_buffer(data)  # add bytes to buffer
-            last_packet_time = time.time()
-        else:
+        # add bytes from the BLE buffer to the buffer array - NEW
+        try:
+            data = ble_data_queue.get(timeout=0.01)  # 10ms timeout
+            parser.update_buffer(data)
+        except queue.Empty:
+            # No data available - check for timeout
             if time.time() - last_packet_time > 2.0:
                 print(
                     f"No data for 2 seconds, assuming done. Received {packet_count} packets"
                 )
                 break
-            # No full packet yet — give the CPU a tiny rest
-            time.sleep(0.001)
+            time.sleep(0.001)  # Small sleep
+            continue  # Skip rest of loop if no data
         # Check how many bytes have arrived from the MCU
         if b"RESET_REASON" in parser.buffer:
             print(f"⚠️ ESP32 RESET DETECTED: {data}")
@@ -146,6 +273,8 @@ def read_from_mcu(
             parser.packet_count += 1
             mcu_timestamps.append(packet.timestamp)  # in ms for now
             # Check header
+
+            # print(f"Packet ID: {packet.packet_id}, Packet Count: {parser.packet_count}, Timestamp: {packet.timestamp}, Samples: {packet.samples}")
 
             if parser.packet_count == 1:
                 csv_logger.start_time = datetime.datetime.now().isoformat()
@@ -206,6 +335,8 @@ def read_from_mcu(
                     packet.packet_id,
                     parser.packet_count,
                 )
+                # if global_sample_counter % 1000 == 0:
+                #     print(f"DEBUG: csv_queue size = {csv_logger.csv_queue.qsize()}")
                 global_sample_counter += 1
             with data_lock:
                 received_samples_full.extend(packet.samples)
@@ -250,7 +381,6 @@ def keyboard_listener():
     while True:
         cmd = input("Type STOP to halt data stream: ").strip().upper()
         if cmd == "STOP":
-            ser.write(b"STOP\n")
             stop_flag.set()
             print("Stop flag set.")
             break
@@ -285,7 +415,9 @@ def update_plot():
 def start_streaming_from_mcu(
     config, csv_logger, bpm_logger, detector, bpm_detector, bandpass_filter
 ):
-    global global_sample_counter, timestamp_errors, peak_timestamp_errors
+    global global_sample_counter, timestamp_errors, peak_timestamp_errors, last_packet_time, ble_thread
+    # Initialize to future time to give ESP32 time for 3-second startup delay
+    last_packet_time = time.time() + 5.0  # Add 5 seconds buffer
 
     with data_lock:
         received_samples_full.clear()  # clear array of all received samples
@@ -310,11 +442,27 @@ def start_streaming_from_mcu(
     )
     bpm_detector.__init__(fs=config.fs, window_of_averaging=5)
 
-    ser.write(b"START\n")  # <--- tell firmware to start
-    print("START command written to MCU")
-    # time.sleep(0.2)
-    # signalgen_esp32_ser.write(b'GO\n')
-    time.sleep(0.1)
+    # Clear BLE queue
+    while not ble_data_queue.empty():
+        ble_data_queue.get()
+
+    # Start BLE connection in background thread
+    print("Starting BLE connection thread...")
+    ble_thread = threading.Thread(target=ble_thread_func, daemon=True)
+    ble_thread.start()
+
+    # Wait for BLE connection to complete (with timeout)
+    print("Waiting for BLE connection...")
+    if not ble_connection_ready.wait(timeout=15.0):  # ← Wait up to 15 seconds
+        print("ERROR: BLE connection timeout")
+        return  # Don't start processing thread
+    # Only start processing if BLE connected successfully
+    if ble_client is None:
+        print("ERROR: BLE client not connected")
+        return
+
+    print("BLE connected, starting data processing thread...")
+
     mcu_read_thread = threading.Thread(
         target=read_from_mcu,
         args=(config, csv_logger, bpm_logger, detector, bpm_detector, bandpass_filter),
@@ -324,11 +472,12 @@ def start_streaming_from_mcu(
 
 
 def stop_streaming_from_mcu():
+    """
+    Stop BLE streaming by setting stop flag.
+    The BLE thread (ble_async_main) will detect this and send STOP_STREAM command.
+    """
     stop_flag.set()
-    ser.write(b"STOP\n")
-    time.sleep(0.05)  # let firmware stop
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
+    time.sleep(0.5)  # Give BLE thread time to send STOP and disconnect
     stop_flag.clear()
 
 
@@ -377,9 +526,6 @@ def main(output_csv_path=None):
         fs=config.fs, hp_cutoff=0.5, lp_cutoff=25, order=2
     )
 
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
-
     """Is this all necessary?"""
     # Create Qt application
     app = QtWidgets.QApplication(sys.argv)
@@ -420,13 +566,20 @@ def main(output_csv_path=None):
     def on_window_close(event):
         print("Window is closing! Stopping threads...")
         stop_flag.set()  # Tell all threads to stop
-        ser.write(b"STOP\n")  # Tell the MCU to stop
+
+        # Give BLE thread time to send STOP command and disconnect
+        print("Waiting for BLE thread to stop...")
+        time.sleep(2.0)
 
         # Wait for the logger threads to finish their final writes (raw data and R-peak/BPM)
+        print("Flushing CSV logs...")
         if csv_logger._thread:
-            csv_logger._thread.join(timeout=2.0)
+            csv_logger._thread.join(timeout=3.0)
         if bpm_logger._thread:
-            bpm_logger._thread.join(timeout=2.0)
+            bpm_logger._thread.join(timeout=3.0)
+
+        print(f"✓ Raw data saved to: {raw_csv_path}")
+        print(f"✓ BPM data saved to: {bpm_csv_path}")
 
         event.accept()  # Allow the window to close
 

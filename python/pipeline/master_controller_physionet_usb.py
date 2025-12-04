@@ -4,7 +4,9 @@ import time
 from datetime import datetime
 
 # === Import local modules ===
-from python.pipeline.step1_generate_dataset_physionet import main as generate_dataset_main
+from python.pipeline.step1_generate_dataset_physionet import (
+    main as generate_dataset_main,
+)
 from python.pipeline.step2_flash_firmware import main as generate_and_flash_firmware
 from python.pipeline.step3_batchprocess import main as batch_test_main
 from python.validation.compare_rpeak_bpm_physionet import main as compare_data_main
@@ -27,7 +29,7 @@ file_name = os.path.join(
     file_id_total,
 )  # CHANGE THIS LINE TO CHANGE FILE
 
-output_dir = get_output_dir(patient_id, segment_id)
+output_dir = get_output_dir(patient_id, segment_id, "USB")
 
 print(f"✅ Output directory: {output_dir}")
 
@@ -39,12 +41,17 @@ def run_full_pipeline():
     # === STEP 1: Generate dataset ===
     print("=== STEP 1: Generating ECG dataset ===")
     digital_dataset, r_peaks, num_peaks, inst_bpms = generate_dataset_main(
-        file_name=file_name, output_csv_path=output_dir, bit_res=12, start_s=0, end_s=15
+        file_name=file_name, output_csv_path=output_dir, bit_res=12, start_s=0, end_s=30
     )
     print("✅ Dataset generation complete.\n")
 
     print("=== STEP 2: Generating firmware file and flashing it to ESP32")
-    generate_and_flash_firmware(digital_dataset=digital_dataset, file_id=file_id_total)
+    firmware_result = generate_and_flash_firmware(
+        digital_dataset=digital_dataset, file_id=file_id_total
+    )
+    if firmware_result is None:
+        print("Firmware flashing failed. Pipeline aborted.")
+        return
     print("✅ Firmware flashing complete.\n")
 
     # === STEP 3: Run batch processing ===
@@ -65,12 +72,13 @@ def run_full_pipeline():
     )  # add project_root to make sure it is running from project root, not working directory
     print("✅ Streaming complete.\n")
 
-    # # === STEP 5: Graph and compare ===
-    # print("=== STEP 5: Generating comparison graphs ===")
-    # compare_data_main(csv_logs_folder_path=output_dir)
-    # print("✅ Graph generation complete.\n")
+    # === STEP 5: Graph and compare ===
+    print("=== STEP 5: Generating comparison graphs ===")
+    plot_save_path = os.path.join(output_dir, "comparison_plot.png")
+    compare_data_main(csv_logs_folder_path=output_dir, save_path=plot_save_path)
+    print("✅ Graph generation complete.\n")
 
-    # print("🎯 Full ECG pipeline completed successfully!")
+    print("🎯 Full ECG pipeline completed successfully!")
 
 
 if __name__ == "__main__":
