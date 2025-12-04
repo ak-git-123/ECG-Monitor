@@ -16,7 +16,7 @@ from python.validation.compare_rpeak_bpm_ad8232 import (
 from python.pipeline.config import get_output_dir
 
 # FILE DESCRIPTION
-CONDITION = "rest"  # or "movement", "post_exercise"
+CONDITION = "walk_new_electrodes_on_chest_and_ribs"  # or "movement", "post_exercise"
 RUN_NUMBER = 2
 DURATION_SEC = 30
 SAMPLING_RATE = 250
@@ -31,7 +31,9 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
 
 # OUTPUT DIRECTORY FOR THIS RUN:
-output_dir = os.path.join(project_root, "data_logs", "AD8232", data_file_name_base)
+output_dir = os.path.join(
+    project_root, "data_logs", "AD8232", data_file_name_base, "USB"
+)
 os.makedirs(output_dir, exist_ok=True)
 
 print(f"Output directory for data logs: {output_dir}")
@@ -46,7 +48,7 @@ def run_full_pipeline():
 
     # Verify input file exists
     input_csv = f"{data_file_name_base}.csv"
-    input_path = os.path.join(project_root, "datasets", "AD8232 Datasets", input_csv)
+    input_path = os.path.join(project_root, "datasets", "AD8232 Data", input_csv)
 
     if not os.path.exists(input_path):
         print(f"❌ Error: Input file not found: {input_path}")
@@ -58,7 +60,7 @@ def run_full_pipeline():
 
     # ADD SOMETHING HERE THAT ALLOWS USER TO ACCEPT OR REJECT COLLECTED DATASET AND TRY AGAIN OR QUIT
     print("=== STEP 1: Converting ECG data to digital form ===")
-    digital_dataset = generate_dataset_ad8232_main(input_csv)
+    digital_dataset = generate_dataset_ad8232_main(input_csv, output_csv_path=output_dir)
     print("Digital dataset successfully generated.")
 
     print("=== STEP 2: Generating firmware file and flashing it to ESP32")
@@ -90,7 +92,8 @@ def run_full_pipeline():
 
     # === STEP 5: Graph and compare ===
     print("=== STEP 5: Generating comparison graphs ===")
-    compare_ad8232_data_main(csv_logs_folder_path=output_dir)
+    plot_save_path = os.path.join(output_dir, "comparison_plot.png")
+    compare_ad8232_data_main(csv_logs_folder_path=output_dir, save_path=plot_save_path)
     print("✅ Graph generation complete.\n")
 
     print("🎯 Full ECG pipeline completed successfully!")
