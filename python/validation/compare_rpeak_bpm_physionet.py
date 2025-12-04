@@ -48,7 +48,7 @@ def compare_raw_data():
             f"{len(mismatch_indices)} mismatches found at indices: {mismatch_indices[:10]}"
         )
     else:
-        print("✅ All values are exactly equal")
+        print("All values are exactly equal")
 
     # --- 3️⃣ Within tolerance (for floats / ADC noise) ---
     tolerance = 1e-3
@@ -169,7 +169,14 @@ def plot_bpms():
     plt.show()
 
 
-def plot_all(csv_log_folder_path):
+def plot_all(csv_log_folder_path, save_path=None):
+    """
+    Create comparison plots for R-peak detection and BPM.
+
+    Args:
+        csv_log_folder_path: Path to folder containing CSV files
+        save_path: Optional path to save the figure. If None, figure is only displayed.
+    """
     fig, axs = plt.subplots(2, 1, figsize=(14, 10), sharex=False)
 
     annotated_path = os.path.join(csv_log_folder_path, "annotated_outputs.csv")
@@ -241,15 +248,28 @@ def plot_all(csv_log_folder_path):
     axs[1].grid(True)
 
     plt.tight_layout()
+
+    # Save figure if path provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Comparison plot saved to: {save_path}")
+
     plt.show()
 
 
-def main(csv_logs_folder_path):
+def main(csv_logs_folder_path, save_path=None):
+    """
+    Main function to run comparison plots.
+
+    Args:
+        csv_logs_folder_path: Path to folder containing CSV files
+        save_path: Optional path to save the comparison plot
+    """
     # plot_data_and_peaks(0, 7500)
     # plot_bpms()
-    plot_all(csv_logs_folder_path)
+    plot_all(csv_logs_folder_path, save_path=save_path)
 
 
 if __name__ == "__main__":
-    # main(csv_logs_folder_path=None)
-    main("/Users/anuyakamath/Desktop/ecg_project/data_logs/p00000_s00")
+    main(csv_logs_folder_path=None)
+    # main("/Users/anuyakamath/Desktop/ecg_project/data_logs/p00000_s00")
