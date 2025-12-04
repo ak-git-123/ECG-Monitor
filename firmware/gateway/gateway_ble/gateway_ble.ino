@@ -376,22 +376,22 @@ int buildSimpleMessage(char* buf, size_t buf_size, uint32_t msg_index) {
 
 
 void setup() {
-    Serial.begin(115200);
-    Serial.println("Starting BLE work!");
+  Serial.begin(115200);
+  Serial.println("Starting BLE work!");
 
-    // initialize the server/device "ECG Monitor ESP32"
-    BLEDevice::init("ECG Monitor ESP32");
-    pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new ECGServerCallbacks()); 
+  // initialize the server/device "ECG Monitor ESP32"
+  BLEDevice::init("ECG Monitor ESP32");
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new ECGServerCallbacks()); 
 
 
-    // initialize the service of the server/device (ECG Monitor Service 1)
-    BLEService *pService = pServer->createService(ECG_SERVICE_UUID);
-    Serial.println("Service: ECG Monitor Service");
-    Serial.print("  UUID: ");
-    Serial.println(ECG_SERVICE_UUID);
+  // initialize the service of the server/device (ECG Monitor Service 1)
+  BLEService *pService = pServer->createService(ECG_SERVICE_UUID);
+  Serial.println("Service: ECG Monitor Service");
+  Serial.print("  UUID: ");
+  Serial.println(ECG_SERVICE_UUID);
 
-   // -----------------------------------------
+  // -----------------------------------------
   // Data characteristic (NOTIFY) - shared for both modes
   // -----------------------------------------
   pDataChar = pService->createCharacteristic(

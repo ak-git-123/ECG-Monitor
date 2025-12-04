@@ -1,4 +1,4 @@
-# ECG Heart Rate Monitor
+# Open-Source ECG Monitor
 # About this Project
 
 
